@@ -1,0 +1,567 @@
+`timescale 1ns / 1ps
+
+
+module toptop(
+  input clk,
+  input rst,
+  input [7:0] ad_data,
+  output ad_clk,
+  output [7:0] da_data,
+  output da_clk,
+  //output clk_40M,
+    output uart_tx
+    );
+    
+    top top1(
+      . clk(clk),
+  . rst(rst),
+  . ad_data(ad_data),
+  . ad_clk(ad_clk),
+  .da_data(da_data),
+  . da_clk(da_clk),
+    . uart_tx(uart_tx)
+    
+    );
+endmodule
+`timescale 1ns / 1ps
+/*工程简介
+ad采样数据先送给fft，然后fft结果与预存在dds中的数据复数相乘，
+然后结果送入ifft，ifft的结果由串口发出
+因为ifft输出的数据速度比较快，所以存入fifo，然后串口一个个发出去
+所以每次运行只能完成一次运算，
+*/
+module top(
+  input clk,
+  input rst,
+  input [11:0] ad_data,
+  output ad_clk,
+  output [7:0] da_data,
+  output da_clk,
+  //output clk_40M,
+    output uart_tx
+  /*for simulation
+  output  [23:0]   xk_im,
+  output  [23:0]   xk_re,
+  output [23:0] conj_fft_y_imag,
+  output [23:0] conj_fft_y_real,
+  output mult_out_tvalid,
+  output ifft_m_data_tvalid,
+  output [47:0] mult_out_re,
+  output [47:0] mult_out_im,
+  output reg s_axis_data_tvalid,
+  output [42:0]ifft_xk_re,
+  output [42:0]ifft_xk_im,
+  output m_axis_data_tvalid*/
+  
+
+);
+wire [11:0]rl_ad_data;
+assign rl_ad_data={ad_data[0],ad_data[1],ad_data[2],ad_data[3],ad_data[4],ad_data[5],ad_data[6],ad_data[7],ad_data[8],ad_data[9],ad_data[10],ad_data[11]};
+wire rst_n;
+assign rst_n=!rst;
+/*
+//加一个dds用于模拟ad采样的数据，然后进来以后直接送给fft（可能需要控制一下输入），
+//匹配滤波：fft的结果要和一个固定序列（原lfm序列的fft的共轭）复数相乘，这个固定序列可以放在dds中输出
+//相乘结果再ifft得到最终结果
+*/
+wire clk_40M;
+  pll1 pll_inst
+ (
+  .clk_out1(clk_40M),     // output clk_out1
+  .resetn(rst_n), // input resetn
+  .clk_in1(clk));      // input clk_in1
+  
+
+reg ad_start;
+wire [8:0] addr_data;
+assign ad_clk=clk_40M;
+//模拟AD采样进来的数据
+dds_top dds_top_inst(
+	.clk(clk_40M),
+	.rst_n(rst_n & ad_start),
+	.DA_1(da_data),
+	.da_clk1(da_clk),
+	.addr_data(addr_data),
+	.w_1()
+);
+//simulation
+reg s_axis_data_tvalid;//样本数据有效时置1
+wire m_axis_data_tvalid;
+wire [7:0]s_axis_config_tdata;///配置数据
+assign s_axis_config_tdata = 1;
+reg s_axis_config_tvalid;//配置数据有效时置1
+wire s_axis_config_tready;///IP核准备好接收配置数据时会置1
+wire s_axis_data_tready;///IP核准备好接收样本数据时会置1
+reg  s_axis_data_tlast;//最后一个数据时置1
+wire [31:0] s_axis_data_tdata;
+assign s_axis_data_tdata={24'b0,rl_ad_data};//虚部在前
+wire [47:0]m_axis_data_tdata;
+wire [15:0]m_axis_data_tuser;
+
+wire m_axis_data_tlast;
+wire [7:0]m_axis_status_tdata;
+wire m_axis_status_tvalid;
+
+wire event_frame_started;
+wire event_tlast_unexpected;
+wire event_tlast_missing;
+//wire event_fft_overflow;
+wire event_status_channel_halt;
+wire event_data_in_channel_halt ;
+wire event_data_out_channel_halt;
+xfft_0 fft_inst(
+.aclk(clk_40M),//i
+.aresetn(rst_n),//i
+.s_axis_config_tdata(s_axis_config_tdata),//i[15:0] [7:0]
+.s_axis_config_tvalid(s_axis_config_tvalid),//i
+.s_axis_config_tready(s_axis_config_tready),//o
+.s_axis_data_tdata(s_axis_data_tdata),//i[31:0]
+.s_axis_data_tvalid(s_axis_data_tvalid),//i
+.s_axis_data_tready(s_axis_data_tready),//o
+.s_axis_data_tlast(s_axis_data_tlast),//i
+. m_axis_data_tdata(m_axis_data_tdata),//o
+.m_axis_data_tuser(m_axis_data_tuser),//o
+. m_axis_data_tvalid(m_axis_data_tvalid),//o
+. m_axis_data_tready(1'b1),//i
+.m_axis_data_tlast(m_axis_data_tlast),//o
+//.m_axis_status_tdata(m_axis_status_tdata),//o[7:0]
+//.m_axis_status_tvalid(m_axis_status_tvalid),//o
+//.m_axis_status_tready(1'b1),//i
+.event_frame_started(event_frame_started),//o
+.event_tlast_unexpected(event_tlast_unexpected),//o
+.event_tlast_missing(event_tlast_missing),//o
+//.event_fft_overflow(event_fft_overflow),//o
+.event_status_channel_halt(event_status_channel_halt),//o
+.event_data_in_channel_halt(event_data_in_channel_halt),//o
+.event_data_out_channel_halt(event_data_out_channel_halt)//o
+
+);
+reg a1,a2;
+wire fall_m_datvald;
+always @(posedge clk_40M or negedge rst_n)
+begin
+if (!rst_n) begin
+  a1<=0;
+  a2<=0;
+end else begin
+  a1<=m_axis_data_tvalid;
+  a2<=a1;
+
+end
+end
+assign fall_m_datvald = !a1&a2;
+
+reg [11:0] state;
+reg da_start;
+reg [9:0]ad_cnt;
+///主要控制
+always @(posedge clk_40M or negedge rst_n)
+begin
+ if (!rst_n) begin
+   state<=0;
+    ad_cnt<=0;
+    da_start<=0;
+    ad_start<=0;
+    s_axis_config_tvalid<=0;  
+    s_axis_data_tlast<=0;
+    s_axis_data_tvalid<=0;
+ end else begin
+   case (state)
+
+      12'd0:begin
+      ///fft配置数据
+       if(s_axis_config_tready) 
+        begin    
+            s_axis_config_tvalid<=1;  
+            state<=state+1; 
+        end
+     end 
+      
+     12'd1:begin
+     //fft可以开始接收数据
+        if(s_axis_data_tready)
+        begin
+            s_axis_data_tvalid<=1;
+            da_start<=1;
+            ad_start<=1;
+            ad_cnt<=0;
+            state<=state+1; 
+        end
+     end 
+
+     12'd2:begin
+     ///ad已经采样了512个点
+        if (ad_cnt==10'd510) 
+        begin
+          s_axis_data_tlast<=1;
+        end 
+        else
+        begin
+          s_axis_data_tlast<=0;
+        end
+
+        if(ad_cnt==10'd511)
+        begin
+            s_axis_data_tvalid<=0;
+            //da_start<=0;
+           // ad_start<=0;
+            ad_cnt<=0;
+            state<=state+1; 
+        end
+        else
+        begin
+          ad_cnt<=ad_cnt+1;
+        end
+     end
+
+     12'd3:begin
+     //等fft完成
+          if(fall_m_datvald)
+          begin
+          ///注释掉以下三句确保每次只计算一次
+            //s_axis_data_tvalid<=1;
+            //da_start<=1;
+            //ad_start<=1;
+            ad_cnt<=0;
+            state<=2; 
+          end
+          
+     end 
+
+
+     default:  state<=1;
+   endcase
+ end 
+end
+  wire  [23:0]   xk_im;
+  wire  [23:0]   xk_re;
+assign  {xk_im,xk_re} = m_axis_data_tdata;
+
+wire [23:0] conj_fft_y_real;
+wire [23:0] conj_fft_y_imag;
+
+//输出原序列y的fft的实部
+dds_for_mult_re dds_real(
+    . clk(clk_40M),
+	.rst_n(rst_n  & m_axis_data_tvalid),
+	.DA_1(conj_fft_y_real),//conj_fft_y_real
+	.addr_data()
+
+);
+
+//输出原序列y的fft的虚部
+dds_for_mult_im dds_imag(
+    . clk(clk_40M),
+	.rst_n(rst_n & m_axis_data_tvalid),
+	.DA_1(conj_fft_y_imag),//conj_fft_y_imag
+	.addr_data()
+
+);
+//reg s_axis_a_tvalid;
+wire [47 : 0] s_axis_a_tdata;
+assign s_axis_a_tdata={xk_im,xk_re};
+//reg s_axis_b_tvalid;
+wire [47 : 0] s_axis_b_tdata;
+assign s_axis_b_tdata={conj_fft_y_imag,conj_fft_y_real};
+wire mult_out_tvalid;
+wire [79 : 0] mult_out_tdata;
+wire [32:0] mult_out_re;
+wire [32:0] mult_out_im;
+complex_mult1 complex_mult11 (
+  .clk(clk_40M),       
+  .rst_n(rst_n),                     
+  .s_axis_a_tvalid(m_axis_data_tvalid),       
+  .dina_re(xk_re),         
+  .dina_im(xk_im),
+  .dinb_re(conj_fft_y_real),         
+  .dinb_im(conj_fft_y_imag),
+  .s_axis_b_tvalid(m_axis_data_tvalid),    
+            
+  .m_axis_dout_tvalid(mult_out_tvalid), 
+  .mult_re(mult_out_re),    
+  .mult_im(mult_out_im)
+);
+
+
+
+wire  [7 : 0] ifft_config_tdata;
+assign ifft_config_tdata=0;
+wire ifft_config_tvalid;
+assign ifft_config_tvalid=1;
+
+wire ifft_config_tready;
+wire [79 : 0] ifft_s_data_tdata;
+assign ifft_s_data_tdata={7'b0,mult_out_im[32:0],7'b0,mult_out_re[32:0]};
+wire  ifft_s_data_tvalid;
+assign ifft_s_data_tvalid=mult_out_tvalid;
+wire ifft_s_data_tready;
+reg ifft_s_data_tlast;
+reg [9:0]ifft_cnt1;
+always @(posedge clk_40M or negedge rst_n)
+begin
+    if(!rst_n)
+    begin
+        ifft_s_data_tlast<=0;
+        ifft_cnt1<=0;
+    end
+    else
+    begin
+        if(ifft_s_data_tvalid)
+            ifft_cnt1<=ifft_cnt1+1;
+        else
+            ifft_cnt1<=0;
+        
+        if(ifft_cnt1==10'd510)
+            ifft_s_data_tlast<=1;
+        else
+            ifft_s_data_tlast<=0;
+        
+    end
+end
+wire [95 : 0] ifft_m_data_tdata;
+wire [42:0]ifft_xk_re;
+wire [42:0]ifft_xk_im;
+assign ifft_xk_re=ifft_m_data_tdata[42:0];
+assign ifft_xk_im=ifft_m_data_tdata[90:48];
+
+wire [15 : 0] ifft_m_data_tuser;
+wire ifft_m_data_tvalid;
+wire ifft_m_data_tready;
+assign ifft_m_data_tready=1;
+wire ifft_m_data_tlast;
+
+wire ifft_event_frame_started;
+wire ifft_event_tlast_unexpected;
+wire ifft_event_tlast_missing;
+wire ifft_event_status_channel_halt;
+wire ifft_event_data_in_channel_halt;
+wire ifft_event_data_out_channel_halt;
+ifft ifft1 (
+  .aclk(clk_40M),                                                // input wire aclk
+  .aresetn(rst_n),                                          // input wire aresetn
+  .s_axis_config_tdata(ifft_config_tdata),                  // input wire [7 : 0] s_axis_config_tdata
+  .s_axis_config_tvalid(ifft_config_tvalid),                // input wire s_axis_config_tvalid
+  .s_axis_config_tready(ifft_config_tready),                // output wire s_axis_config_tready
+  .s_axis_data_tdata(ifft_s_data_tdata),                      // input wire [79 : 0] s_axis_data_tdata
+  .s_axis_data_tvalid(ifft_s_data_tvalid),                    // input wire s_axis_data_tvalid
+  .s_axis_data_tready(ifft_s_data_tready),                    // output wire s_axis_data_tready
+  .s_axis_data_tlast(ifft_s_data_tlast),                      // input wire s_axis_data_tlast
+  .m_axis_data_tdata(ifft_m_data_tdata),                      // output wire [95 : 0] m_axis_data_tdata
+  .m_axis_data_tuser(ifft_m_data_tuser),                      // output wire [15 : 0] m_axis_data_tuser
+  .m_axis_data_tvalid(ifft_m_data_tvalid),                    // output wire m_axis_data_tvalid
+  .m_axis_data_tready(ifft_m_data_tready),                    // input wire m_axis_data_tready
+  .m_axis_data_tlast(ifft_m_data_tlast),                      // output wire m_axis_data_tlast
+  .event_frame_started(ifft_event_frame_started),                  // output wire event_frame_started
+  .event_tlast_unexpected(ifft_event_tlast_unexpected),            // output wire event_tlast_unexpected
+  .event_tlast_missing(ifft_event_tlast_missing),                  // output wire event_tlast_missing
+  .event_status_channel_halt(ifft_event_status_channel_halt),      // output wire event_status_channel_halt
+  .event_data_in_channel_halt(ifft_event_data_in_channel_halt),    // output wire event_data_in_channel_halt
+  .event_data_out_channel_halt(ifft_event_data_out_channel_halt)  // output wire event_data_out_channel_halt
+);
+
+reg wr_en;
+reg rd_en;
+wire [85 : 0] fifo_out;
+wire fifo_full;
+wire fifo_empty;
+
+fifo fifo1 (
+    .wr_clk(clk_40M),  // input wire wr_clk
+    .rd_clk(clk),  // input wire rd_clk
+  .rst(!rst_n),    // input wire srst
+  .din({ifft_xk_im,ifft_xk_re}),      // input wire [79 : 0] din
+  .wr_en(wr_en),  // input wire wr_en
+  .rd_en(rd_en),  // input wire rd_en
+  .dout(fifo_out),    // output wire [85 : 0] dout
+  .full(fifo_full),    // output wire full
+  .empty(fifo_empty)  // output wire empty
+);
+
+reg ifft_v1,ifft_v2;
+wire ifft_v_raise,ifft_v_fall;
+always @(posedge clk or negedge rst_n) begin
+if (!rst_n) begin
+  ifft_v1<=0;
+  ifft_v2<=0;
+end else begin
+  ifft_v1<=ifft_m_data_tvalid;
+  ifft_v2<=ifft_v1;
+end
+end
+assign ifft_v_raise= ifft_v1 & !ifft_v2;
+assign ifft_v_fall = !ifft_v1 & ifft_v2;
+
+reg[85:0] uart_data;
+reg [9:0] wr_cnt;
+reg [2:0]fifo_state;
+reg uart_end;
+wire [4:0]uart_state;
+//ifft开始输出时，fifo开始写，写满后即停止写后续数据，
+//因为不是所有的ifft结果都需要，只需要保证fifo中一次存入的所有数据是这一次ifft输出的前128（fifo深度）个数据
+always @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    fifo_state<=0;
+    rd_en<=0;
+    wr_en<=0;
+    uart_data<=0;
+    uart_end<=0;
+  end else begin
+    case (fifo_state)
+      3'd0: begin
+            if (ifft_v_raise & fifo_empty) begin
+                wr_en <= 1;
+                fifo_state <= fifo_state+1;
+            end 
+
+      end
+
+      3'd1: begin
+        
+        //等fifo满后停止这一次写
+        if (fifo_full) begin
+          wr_en <= 0;
+          fifo_state <= fifo_state+1;
+        end 
+      end
+
+      3'd2: begin
+        
+        if (fifo_empty) begin
+          rd_en<=0;
+          uart_end<=1;
+          fifo_state <= 0;
+        end 
+        else begin
+          if (uart_state==13) begin//这里必须等于UART中传输的最后一个状态
+            rd_en<=1;
+            fifo_state <= fifo_state+1;
+          end 
+          
+        end
+      end
+
+      3'd3: begin
+        
+            rd_en<=0;
+            uart_data<=fifo_out;
+            fifo_state <= 2;
+        
+      end
+
+
+      default: fifo_state <= 0;
+    endcase
+        
+  end
+end
+
+
+ UART uart_tx1(
+	. clk(clk),
+	. rst_n(rst_n & !uart_end),
+	. number1(uart_data),
+	. state(uart_state),
+	. tx(uart_tx)
+	);
+
+ila_0 ila_inst (
+	.clk(clk), 
+	.probe0(ad_data), 
+	
+	.probe1(da_data),
+	.probe2(rl_ad_data)
+);
+
+endmodule // 
+module dds_top(
+	input clk,
+	input rst_n,
+	output [7:0]DA_1 ,
+	output [8:0] addr_data,
+	output da_clk1,
+	output w_1
+);
+
+wire [7:0] da_out;
+//wire [9:0] addr_data;
+
+ctrl ctrl_inst(				//璋冪敤ctrl
+   .clk(clk),							
+   .rst_n(rst_n),							
+   .addr(addr_data)					
+	);
+	
+lfm_sig lfm_inst(
+	.a(addr_data),	//璋冪敤romIP鏍?
+	.clk(clk),
+	.spo(da_out)
+	);
+
+assign DA_1=256-da_out;//2^(width-1)
+	
+assign da_clk1 = clk;		//杩欎袱涓俊鍙烽兘鏄疍A鐨勯┍鍔ㄤ俊鍙?
+assign w_1 = clk;
+	
+endmodule
+module ctrl(
+   input clk,							//50MHz鏃堕挓
+   input rst_n,							//澶嶄綅
+   output [8:0] addr					//鐩镐綅绱姞鍣ㄨ緭鍑?
+	);
+	
+	parameter WIDTH =  8'd32;
+	//parameter step = 32'd4294967;		//40Mclk 40ksignal 棰戠巼鎺у埗瀛? 2^32*10M/100M
+
+	reg [WIDTH-1:0] cnt=0;	
+
+always @(posedge clk) begin
+	if (!rst_n) begin
+		cnt <= 0;
+	end
+	else begin
+		//cnt <= cnt + step;
+		
+		if(cnt==512-1)
+		begin
+		  cnt<=0;
+		end
+		else cnt <= cnt + 1;
+	end
+end
+
+//assign addr=cnt[WIDTH-1:WIDTH-10];
+assign addr=cnt[8:0];
+//assign phaseQ=cnt[WIDTH-1:WIDTH-10] + 10'b01000_00000 ;//鐩镐綅姝ｄ氦 2^N/2
+
+endmodule
+
+
+//可控频率
+/*module ctrl(
+   input clk,							//50MHz鏃堕挓
+   input rst_n,							//澶嶄綅
+   output [8:0] addr					//鐩镐綅绱姞鍣ㄨ緭鍑?
+	);
+	
+	parameter WIDTH =  8'd32;
+	parameter step = 32'd107374182;		//40Mclk 1M
+
+	reg [WIDTH-1:0] cnt=0;	
+
+always @(posedge clk) begin
+	if (!rst_n) begin
+		cnt <= 0;
+	end
+	else begin
+		cnt <= cnt + step;
+		
+	
+	end
+end
+
+assign addr=cnt[WIDTH-1:WIDTH-9];
+//assign addr=cnt[8:0];
+//assign phaseQ=cnt[WIDTH-1:WIDTH-10] + 10'b01000_00000 ;//鐩镐綅姝ｄ氦 2^N/2
+
+endmodule
+*/
